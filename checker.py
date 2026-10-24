@@ -1,7 +1,4 @@
-from collections import Counter
 import os
-import re
-import urllib.parse
 from playwright.sync_api import sync_playwright
 import requests
 
@@ -9,17 +6,7 @@ PRODUCT_CODE = "4570118196217"
 URL = f"https://gashapon.jp/shop/gplus_list.php?product_code={PRODUCT_CODE}"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
-def send_to_discord(message):
-    if not DISCORD_WEBHOOK_URL:
-        print("錯誤：未設定 DISCORD_WEBHOOK_URL 密鑰！")
-        return
-    
-    data = {"content": message}
-    response = requests.post(DISCORD_WEBHOOK_URL, json=data)
-    print(f"Discord 回應狀態碼: {response.status_code}")
-
 def check_stock():
-    print(f"開始爬取網址: {URL}")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -31,27 +18,22 @@ def check_stock():
         try:
             page.goto(URL, timeout=30000)
             page.wait_for_selector("body", timeout=10000)
-            page.wait_for_timeout(5000) # 多給一點時間讓 JS 渲染
+            page.wait_for_timeout(4000)
             
-            # 抓取頁面所有文字
+            # 抓取頁面所有文字行
             shop_data = page.evaluate("""() => {
                 const bodyText = document.body.innerText;
                 return bodyText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
             }""")
 
             browser.close()
-            print(f"成功抓取到的文字總行數: {len(shop_data)}")
 
-            # 如果抓到的文字太少，代表可能被擋或尚未載入
-            if len(shop_data) < 10:
-                send_to_discord(f"⚠️ **【監控警報】** 抓到的網頁內容過少（可能被 Cloudflare 阻擋），請手動確認：\n{URL}")
-                return
-
-            shops_list = []
+            cleaned_shops = []
             i = 0
             while i < len(shop_data):
                 line = shop_data[i]
                 
+                # 嚴格過濾導覽列、選單與頁尾版權文字
                 footer_keywords = [
                     "スケジュール", "キャラクター", "ブランド", "ショップ", "ログイン", "さがす", 
                     "閉じる", "ホーム>", "ご利用規約", "プライバシーポリシー", "よくあるご質問", 
@@ -59,61 +41,54 @@ def check_stock():
                     "NAMCO", "無断転用", "登録商標", "コピーライト", "©", "All Rights Reserved"
                 ]
                 
+                # 如果這行是純選單或版權宣告，直接跳過
                 if any(fk in line for fk in footer_keywords) and not ("店" in line or "デパート" in line):
                     i += 1
                     continue
                 
+                # 識別店名（包含「店」或「デパート」的行）
                 if ("ガシャポン" in line or "デパート" in line or "店" in line) and len(line) < 80:
                     shop_name = line
                     address = ""
                     
+                    # 向下檢查接下來的 3 行內是否有地址
                     for j in range(1, 4):
                         if i + j < len(shop_data):
                             next_line = shop_data[i + j]
-                            if any(p in next_line for p in ["都", "道", "府", "県", "市", "区", "町", "村"]) and not any(fk in next_line for fk in footer_keywords):
-                                address = next_link = next_line
+                            # 含有地址常見的行政區劃或字眼，且不是版權/選單文字
+                            if any(p in next_line for p in ["都", "道", "府", "県", "市", "区", "町", "村", "丁目", "番"]) and not any(fk in next_line for fk in footer_keywords):
+                                address = next_line
                                 break
                     
+                    entry = f"📍 **{shop_name}**"
                     if address:
-                        match = re.search(r'(^.*?[都道府県].+?[市])', address)
-                        city = match.group(1) if match else "其他地區"
-                    else:
-                        city = "未知地區"
-                        address = "未抓取到詳細地址"
-
-                    map_query = urllib.parse.quote(f"{shop_name} {address}")
-                    map_url = f"https://www.google.com/maps/search/?api=1&query={map_query}"
+                        entry += f"\n🏠 地址：{address}"
                     
-                    shops_list.append({
-                        "name": shop_name,
-                        "address": address,
-                        "city": city,
-                        "url": map_url
-                    })
+                    if entry not in cleaned_shops:
+                        cleaned_shops.append(entry)
+                
                 i += 1
 
-            if shops_list:
-                city_counts = Counter([s['city'] for s in shops_list])
-                summary_str = "/".join([f"{city}({count})" for city, count in city_counts.items()])
-                
-                content = f"🚨 **【扭蛋庫存即時更新】** 🚨\n{summary_str}\n\n------------------\n"
-                entries = []
-                for s in shops_list:
-                    entry = f"📍 **{s['name']}**\n🏠 地址：{s['address']}\n🔗 [Google地圖導航]({s['url']})"
-                    entries.append(entry)
-                
-                content += "\n\n".join(entries)
-                content += f"\n\n🔗 官方查詢頁面：\n{URL}"
+            # 發送至 Discord
+            if cleaned_shops:
+                content = f"🚨 **【扭蛋庫存即時更新】** 🚨\n找到以下有貨的店舖與地址：\n\n" + "\n\n".join(cleaned_shops)
+                content += f"\n\n🔗 點此查看官方清單：\n{URL}"
             else:
-                content = f"🔍 腳本正常運行，但未在頁面中解析到符合條件的店舖名稱。\n官方查詢頁面：\n{URL}"
+                content = f"🔍 目前頁面未偵測到有貨店舖，請點擊連結確認：\n{URL}"
 
             send_to_discord(content)
 
         except Exception as e:
             browser.close()
-            error_msg = f"❌ **【監控錯誤】** 執行發生例外錯誤：\n`{str(e)}`"
-            print(error_msg)
-            send_to_discord(error_msg)
+            print(f"爬取發生錯誤: {e}")
+
+def send_to_discord(message):
+    if not DISCORD_WEBHOOK_URL:
+        print("未設定 Discord Webhook")
+        return
+    
+    data = {"content": message}
+    requests.post(DISCORD_WEBHOOK_URL, json=data)
 
 if __name__ == "__main__":
     check_stock()
