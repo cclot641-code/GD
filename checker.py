@@ -1,5 +1,8 @@
 import os
 import re
+import time
+import random
+from datetime import datetime, timezone, timedelta
 from playwright.sync_api import sync_playwright
 import requests
 
@@ -8,6 +11,27 @@ URL = f"https://gashapon.jp/shop/gplus_list.php?product_code={PRODUCT_CODE}"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
 def check_stock():
+    # 1. 取得當前日本時間 (JST, UTC+9)
+    jst = timezone(timedelta(hours=9))
+    now_jst = datetime.now(jst)
+    current_hour = now_jst.hour
+    current_minute = now_jst.minute
+    current_total_minutes = current_hour * 60 + current_minute
+
+    # 2. 設定運作時間範圍：07:00 至 24:00 (即 420 分鐘到 1440 分鐘)
+    start_limit = 7 * 60      # 07:00
+    end_limit = 24 * 60       # 24:00
+
+    if not (start_limit <= current_total_minutes < end_limit):
+        print(f"目前時間 ({now_jst.strftime('%H:%M')}) 不在營運時間內 (07:00 - 24:00)，跳過執行。")
+        return
+
+    # 3. 隨機等待 5 到 8 分鐘 (300 秒 到 480 秒)
+    sleep_seconds = random.randint(300, 480)
+    print(f"在營運時間內，隨機等待 {sleep_seconds} 秒後開始執行...")
+    time.sleep(sleep_seconds)
+
+    # 4. 開始執行爬蟲
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -64,7 +88,6 @@ def check_stock():
                 
                 for item in shops_data:
                     addr = item['address']
-                    # 萃取「市」級（如 東京都八王子市、宮城県仙台市、大阪府岸和田市）
                     match = re.search(r'^(.*?([都道府縣県].*?市|.*?市|.*?区))', addr)
                     if match:
                         region = match.group(1).strip()
@@ -74,7 +97,6 @@ def check_stock():
                     
                     entries.append(f"{item['name']}\n地址：{addr}")
                 
-                # 按照您要求的格式：最上方是總結，接著空行，然後是店鋪清單（無多餘標題與連結）
                 summary_line = ",".join(regions)
                 content = f"{summary_line}\n\n" + "\n\n".join(entries)
             else:
