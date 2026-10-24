@@ -1,4 +1,5 @@
 import os
+import re
 from playwright.sync_api import sync_playwright
 import requests
 
@@ -6,53 +7,84 @@ PRODUCT_CODE = "4570118196217"
 URL = f"https://gashapon.jp/shop/gplus_list.php?product_code={PRODUCT_CODE}"
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL")
 
+# 日本行政區劃開頭，用來比對與精準抓取地址
+PREFECTURES = r"(東京都|北海道|(京都|大阪)府|青森|岩手|宮城|秋田|山形|福島|茨城|栃木|群馬|埼玉|千葉|神奈川|新潟|富山|石川|福井|山梨|長野|岐阜|靜岡|愛知|三重|滋賀|兵庫|奈良|和歌山|鳥取|島根|岡山|廣島|山口|德島|香川|愛媛|高知|福岡|佐賀|長崎|熊本|大分|宮崎|鹿兒島|沖繩)"
+
 def check_stock():
     with sync_playwright() as p:
-        # 啟動無頭瀏覽器 (Headless Browser)
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        # 設定視窗大小並帶上常見的 User-Agent
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={'width': 1280, 'height': 800}
+        )
+        page = context.new_page()
         
         try:
-            # 前往目標網頁
             page.goto(URL, timeout=30000)
-            
-            # 等待頁面上的店鋪區塊載入（根據該網頁結構，等待包含店名的元素出現）
-            # 這裡我們等待頁面加載完成並抓取所有店舖名稱
             page.wait_for_selector("body", timeout=10000)
+            # 等待動態載入的店舖資料渲染完成
+            page.wait_for_timeout(4000)
             
-            # 額外等待 3 秒讓 AJAX 動態請求完全渲染
-            page.wait_for_timeout(3000)
-            
-            # 透過 JavaScript 抓取所有店名與地址的文字
-            # 根據該網站的排版，店名通常會在標題或特定的區塊中
-            shops = page.evaluate("""() => {
+            # 使用 JavaScript 精確萃取店家名稱與地址
+            shop_data = page.evaluate("""() => {
                 const results = [];
-                // 尋找所有可能的店鋪名稱元素（包含官方商店名稱等）
-                // 依據該網站，店名常出現在帶有特定字樣的標題或區塊
-                const elements = document.querySelectorAll('h3, .shop_name, div');
-                elements.forEach(el => {
-                    const text = el.innerText.trim();
-                    // 過濾出包含分店或店舖特徵的文字
-                    if ((text.includes('店') || text.includes('ショップ')) && text.length < 50 && !results.includes(text)) {
-                        results.push(text);
-                    }
-                });
-                return results;
+                // 尋找包含店鋪資訊的區塊（通常是列表項或特有卡片）
+                // 先嘗試定位每一個店舖卡片容器，若無則遍歷包含店名與地址的文字區塊
+                const bodyText = document.body.innerText;
+                const lines = bodyText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                
+                return lines;
             }""")
 
             browser.close()
 
-            # 整理並過濾掉重複或無關的字串
-            valid_shops = [s for s in shops if "店" in s or "ショップ" in s]
-            
-            if valid_shops:
-                message = f"🚨 **【扭蛋庫存即時更新】** 🚨\n找到以下有貨的店舖：\n" + "\n".join([f"• {shop}" for shop in valid_shops[:10]])
-                message += f"\n\n🔗 點此查看完整清單：\n{URL}"
-            else:
-                # 如果沒抓到具體店名，至少提供網址
-                message = f"🔍 扭蛋頁面已更新，請直接點擊查看有貨店舖：\n{URL}"
+            # 解析與過濾提取出的文字
+            cleaned_shops = []
+            i = 0
+            while i < len(shop_data):
+                line = shop_data[i]
+                
+                # 排除選單關鍵字
+                ignored_keywords = ["スケジュール", "キャラクター", "ブランド", "ショップ", "ログイン", "さがす", "閉じる", "ホーム>", "ご利用規約"]
+                if any(kw in line for kw in ignored_keywords):
+                    i += 1
+                    continue
+                
+                # 判斷是否為店名 (通常含有 ガシャポン、デパート、オフィシャルショップ 等)
+                if ("ガシャポン" in line or "ショップ" in line or "デパート" in line) and len(line) < 60:
+                    shop_name = line
+                    address = ""
+                    
+                    # 往下檢查下一行或隔一行是否為日本地址（包含縣市名或郵遞區號）
+                    for j in range(1, 4):
+                        if i + j < len(shop_data):
+                            next_line = shop_data[i + j]
+                            # 判斷是否包含都道府縣字樣或地址特徵
+                            if any(pref in next_line for pref in ["都", "道", "府", "県"]) and any(c.isdigit() for c in next_line):
+                                address = next_line
+                                break
+                            elif "市" in next_line or "區" in next_line or "区" in next_line:
+                                address = next_line
+                                break
+                    
+                    entry = f"📍 **{shop_name}**"
+                    if address:
+                        entry += f"\n🏠 地址：{address}"
+                    
+                    if entry not in cleaned_shops:
+                        cleaned_shops.append(entry)
+                
+                i += 1
 
-            send_to_discord(message)
+            # 發送至 Discord
+            if cleaned_shops:
+                content = f"🚨 **【扭蛋庫存即時更新】** 🚨\n找到以下有貨的店舖與地址：\n\n" + "\n\n".join(cleaned_shops[:10])
+                content += f"\n\n🔗 點此查看官方清單：\n{URL}"
+            else:
+                content = f"🔍 目前頁面更新，請點擊連結查看詳細店舖：\n{URL}"
+
+            send_to_discord(content)
 
         except Exception as e:
             browser.close()
