@@ -20,58 +20,54 @@ def check_stock():
             page.wait_for_selector("body", timeout=10000)
             page.wait_for_timeout(4000)
             
-            # 抓取頁面所有文字行
-            shop_data = page.evaluate("""() => {
+            # 直接在瀏覽器內部用 JavaScript 抓取所有店舖名稱與緊隨其後的地址
+            shops_data = page.evaluate("""() => {
+                const results = [];
                 const bodyText = document.body.innerText;
-                return bodyText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                const lines = bodyText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                
+                // 尋找包含店名特徵的行
+                for (let i = 0; i < lines.length; i++) {
+                    let line = lines[i];
+                    // 判斷是否為店名
+                    if ((line.includes('ガシャポン') || line.includes('デパート') || line.includes('ショップ')) && 
+                        line.length < 80 && 
+                        !line.includes('検索') && 
+                        !line.includes('公式アカウント') && 
+                        !line.includes('どこ？')) {
+                        
+                        let shopName = line;
+                        let address = "";
+                        
+                        // 往後尋找地址（通常包含都道府縣或市區町村）
+                        for (let j = 1; j <= 3; j++) {
+                            if (i + j < lines.length) {
+                                let nextLine = lines[i + j];
+                                if ((nextLine.includes('都') || nextLine.includes('道') || nextLine.includes('府') || nextLine.includes('県') || nextLine.includes('市')) &&
+                                    !nextLine.includes('都道府県') && !nextLine.includes('お店をさがす')) {
+                                    address = nextLine;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (address) {
+                            results.push({ name: shopName, address: address });
+                        }
+                    }
+                }
+                return results;
             }""")
 
             browser.close()
 
-            cleaned_shops = []
-            i = 0
-            while i < len(shop_data):
-                line = shop_data[i]
+            # 組合成乾淨的訊息格式
+            if shops_data:
+                entries = []
+                for item in shops_data:
+                    entries.append(f"{item['name']}\n地址：{item['address']}")
                 
-                # 嚴格過濾導覽列、選單與頁尾版權文字
-                footer_keywords = [
-                    "スケジュール", "キャラクター", "ブランド", "ショップ", "ログイン", "さがす", 
-                    "閉じる", "ホーム>", "ご利用規約", "プライバシーポリシー", "よくあるご質問", 
-                    "お問合せ", "アンケート", "ウェブアクセシビリティ", "Do Not Sell", "BANDAI", 
-                    "NAMCO", "無断転用", "登録商標", "コピーライト", "©", "All Rights Reserved"
-                ]
-                
-                # 如果這行是純選單或版權宣告，直接跳過
-                if any(fk in line for fk in footer_keywords) and not ("店" in line or "デパート" in line):
-                    i += 1
-                    continue
-                
-                # 識別店名（包含「店」或「デパート」的行）
-                if ("ガシャポン" in line or "デパート" in line or "店" in line) and len(line) < 80:
-                    shop_name = line
-                    address = ""
-                    
-                    # 向下檢查接下來的 3 行內是否有地址
-                    for j in range(1, 4):
-                        if i + j < len(shop_data):
-                            next_line = shop_data[i + j]
-                            # 含有地址常見的行政區劃或字眼，且不是版權/選單文字
-                            if any(p in next_line for p in ["都", "道", "府", "県", "市", "区", "町", "村", "丁目", "番"]) and not any(fk in next_line for fk in footer_keywords):
-                                address = next_line
-                                break
-                    
-                    entry = f"📍 **{shop_name}**"
-                    if address:
-                        entry += f"\n🏠 地址：{address}"
-                    
-                    if entry not in cleaned_shops:
-                        cleaned_shops.append(entry)
-                
-                i += 1
-
-            # 發送至 Discord
-            if cleaned_shops:
-                content = f"🚨 **【扭蛋庫存即時更新】** 🚨\n找到以下有貨的店舖與地址：\n\n" + "\n\n".join(cleaned_shops)
+                content = "🚨 **【扭蛋庫存即時更新】** 🚨\n\n" + "\n\n".join(entries)
                 content += f"\n\n🔗 點此查看官方清單：\n{URL}"
             else:
                 content = f"🔍 目前頁面未偵測到有貨店舖，請點擊連結確認：\n{URL}"
