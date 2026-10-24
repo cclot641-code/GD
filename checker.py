@@ -1,7 +1,5 @@
 import os
 import re
-import time
-import random
 from datetime import datetime, timezone, timedelta
 from playwright.sync_api import sync_playwright
 import requests
@@ -20,18 +18,15 @@ def check_stock():
 
     # 2. 設定運作時間範圍：07:00 至 24:00 (即 420 分鐘到 1440 分鐘)
     start_limit = 7 * 60      # 07:00
-    end_limit = 24 * 60       # 24:00
+    end_limit = 23 * 60       # 23:00
 
     if not (start_limit <= current_total_minutes < end_limit):
-        print(f"目前時間 ({now_jst.strftime('%H:%M')}) 不在營運時間內 (07:00 - 24:00)，跳過執行。")
+        print(f"目前時間 ({now_jst.strftime('%H:%M')}) 不在營運時間內 (07:00 - 23:00)，跳過執行。")
         return
 
-    # 3. 隨機等待 5 到 8 分鐘 (300 秒 到 480 秒)
-    sleep_seconds = random.randint(300, 480)
-    print(f"在營運時間內，隨機等待 {sleep_seconds} 秒後開始執行...")
-    time.sleep(sleep_seconds)
+    print(f"目前時間 ({now_jst.strftime('%H:%M')}) 在營運時間內，開始即時執行爬蟲...")
 
-    # 4. 開始執行爬蟲
+    # 3. 立即執行爬蟲（無延遲）
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
