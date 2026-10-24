@@ -1,9 +1,9 @@
-name: Gashapon Stock Checker
+name: Gashapon Stock Checker (Playwright)
 
 on:
   schedule:
-    - cron: '*/5 * * * *' # 代表每 5 分鐘執行一次
-  workflow_dispatch: # 允許你手動按鈕觸發測試
+    - cron: '*/5 * * * *' # 每 5 分鐘執行一次
+  workflow_dispatch:
 
 jobs:
   run-checker:
@@ -19,7 +19,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests beautifulsoup4
+          pip install requests playwright
+          playwright install --with-deps chromium
 
       - name: Run script
         env:
