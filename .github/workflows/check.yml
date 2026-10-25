@@ -1,8 +1,8 @@
-name: Gashapon Stock Checker
+name: Gashapon Stock Checker (API Triggered)
 
 on:
-  schedule:
-    - cron: '*/10 * * * *' # 每 10 分鐘觸發一次（可改為 */5 或 */15）
+  repository_dispatch:
+    types: [run-checker]
   workflow_dispatch:
 
 jobs:
