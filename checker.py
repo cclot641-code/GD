@@ -16,7 +16,7 @@ def check_stock():
     current_minute = now_jst.minute
     current_total_minutes = current_hour * 60 + current_minute
 
-    # 2. 設定運作時間範圍：07:00 至 24:00 (即 420 分鐘到 1440 分鐘)
+    # 2. 設定運作時間範圍：07:00 至 24:00
     start_limit = 7 * 60      # 07:00
     end_limit = 24 * 60       # 24:00
 
@@ -26,7 +26,7 @@ def check_stock():
 
     print(f"目前時間 ({now_jst.strftime('%H:%M')}) 在營運時間內，開始即時執行爬蟲...")
 
-    # 3. 立即執行爬蟲
+    # 3. 執行 Playwright 爬蟲
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -40,6 +40,7 @@ def check_stock():
             page.wait_for_selector("body", timeout=10000)
             page.wait_for_timeout(4000)
             
+            # 全新反向邏輯：先找地址，再往回找店名
             shops_data = page.evaluate("""() => {
                 const results = [];
                 const bodyText = document.body.innerText;
@@ -48,28 +49,36 @@ def check_stock():
                 for (let i = 0; i < lines.length; i++) {
                     let line = lines[i];
                     
-                    // 放寬條件：只要結尾是「店」或者包含特定關鍵字，且小於 80 字元，即視為店名
-                    if ((line.endsWith('店') || line.includes('ガシャポン') || line.includes('デパート') || line.includes('ショップ')) && 
-                        line.length < 80 && 
-                        !line.includes('検索') && 
-                        !line.includes('公式アカウント') && 
-                        !line.includes('どこ？')) {
+                    // 判斷這一行是否為日本地址（必須包含「市」或「区」，且包含都道府縣其中一個字，排除垃圾提示句）
+                    const isAddress = (line.includes('市') || line.includes('区')) && 
+                                      (line.includes('都') || line.includes('道') || line.includes('府') || line.includes('県')) && 
+                                      !line.includes('都道府県') && 
+                                      !line.includes('お店をさがす') &&
+                                      line.length < 100;
+                    
+                    if (isAddress) {
+                        let address = line;
+                        let shopName = "";
                         
-                        let shopName = line;
-                        let address = "";
-                        
-                        for (let j = 1; j <= 3; j++) {
-                            if (i + j < lines.length) {
-                                let nextLine = lines[i + j];
-                                if ((nextLine.includes('都') || nextLine.includes('道') || nextLine.includes('府') || nextLine.includes('県') || nextLine.includes('市')) &&
-                                    !nextLine.includes('都道府県') && !nextLine.includes('お店をさがす')) {
-                                    address = nextLine;
+                        // 往回找 1 到 2 行作為店名
+                        for (let j = 1; j <= 2; j++) {
+                            if (i - j >= 0) {
+                                let prevLine = lines[i - j];
+                                // 只要上一行不是網頁介面雜訊，就認定它是店名
+                                if (prevLine.length < 80 && 
+                                    !prevLine.includes('検索') && 
+                                    !prevLine.includes('公式アカウント') && 
+                                    !prevLine.includes('どこ？') && 
+                                    !prevLine.includes('取扱商品') &&
+                                    !prevLine.includes('km') &&
+                                    !prevLine.includes('©')) {
+                                    shopName = prevLine;
                                     break;
                                 }
                             }
                         }
                         
-                        if (address) {
+                        if (shopName && address) {
                             results.push({ name: shopName, address: address });
                         }
                     }
@@ -85,6 +94,7 @@ def check_stock():
                 
                 for item in shops_data:
                     addr = item['address']
+                    # 萃取「市」級（如 東京都八王子市、静岡県静岡市葵区 等）
                     match = re.search(r'^(.*?([都道府縣県].*?市|.*?市|.*?区))', addr)
                     if match:
                         region = match.group(1).strip()
