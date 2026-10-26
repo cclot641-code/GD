@@ -26,7 +26,7 @@ def check_stock():
 
     print(f"目前時間 ({now_jst.strftime('%H:%M')}) 在營運時間內，開始即時執行爬蟲...")
 
-    # 3. 立即執行爬蟲（無延遲）
+    # 3. 立即執行爬蟲
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -47,7 +47,9 @@ def check_stock():
                 
                 for (let i = 0; i < lines.length; i++) {
                     let line = lines[i];
-                    if ((line.includes('ガシャポン') || line.includes('デパート') || line.includes('ショップ')) && 
+                    
+                    // 放寬條件：只要結尾是「店」或者包含特定關鍵字，且小於 80 字元，即視為店名
+                    if ((line.endsWith('店') || line.includes('ガシャポン') || line.includes('デパート') || line.includes('ショップ')) && 
                         line.length < 80 && 
                         !line.includes('検索') && 
                         !line.includes('公式アカウント') && 
